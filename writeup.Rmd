@@ -1,0 +1,120 @@
+---
+title: 'Practical Machine Learning Project: Prediction Assignment'
+author: "Jakob Ludewig"
+date: "Monday, May 18, 2015"
+output: html_document
+---
+
+## Introduction
+
+#TODO: CItation
+
+This assignment describes the construction of a machine learning algorithm for Human Actitivy Recognition (HAR). The data is taken from [linked phrase](http://example.com) and was measured on 5 individuals. The test subjects were asked to perform a physical exercise in 5 (incorrect) different manners. We will construct an algorithm to predict in which manner the exercise was performed.
+
+## Data Clean-Up and Choice of Predictors
+
+The data consists of two seperate data sets, one for training (consisting of 19622 observations of 160 variables) and one for the testing data (consisting of 20 observations of 160 variables). First, we import the training data by
+
+```{r}
+training_raw <- read.csv2(file = "pml-training.csv",header = TRUE,sep=",")
+```
+
+and remove some of the variables which do not contain any significant amount of information (NAs and empty columns):
+
+```{r}
+training_raw <- training_raw[,apply(training_raw,2,function(x) {sum(is.na(x))})/nrow(training_raw)<0.95]
+training_raw <- training_raw[,apply(training_raw,2,function(x) { sum(x == "")})/nrow(training_raw) < 0.95]
+```
+
+Furthermore we remove some variables which do not contain any information about the movement data (e.g. recording time, name of the subject etc.) and convert the remaining columns to appropriate types:
+
+```{r}
+training_raw <- subset(training_raw, select=-c(1,2,3,4,5,6,7))
+training_raw[,c(1,2,3,5,6,7,14,15,16,18,19,20,27,28,29,31,32,33,39,40,41,42,44,45,46,51,52)] <- lapply(training_raw[,c(1,2,3,5,6,7,14,15,16,18,19,20,27,28,29,31,32,33,39,40,41,42,44,45,46,51,52)],function(x) { as.numeric(as.character(x))})
+training_raw$classe <- as.factor(training_raw$classe)
+```
+
+We apply Principal Component Analysis (PCA) with a threshold of 95% to the remaining 52 variables in order to reduce their number which will speed up the computation of more complex prediction models while preserving 95 % of the variance in the predictors:
+
+```{r}
+library("caret")
+pp <- preProcess(training_raw[,-53],method="pca",thresh=0.95)
+training <- predict(pp,training_raw[,-53])
+training$classe <- training_raw$classe
+```
+
+In the following the resulting _training_ data frame will be used to build a model which predicts the type of activity contained in the _classe_ variable of the data frame.
+
+## Evaluation of the _rpart_ Model for the Data Set
+
+First we will evaluate the suitability of the Recursive Partitioning and Regression Trees (rpart) model for our data set. We will do so by fitting 5 different trees to our data using a 5-fold cross validation. The averaged out-of-sample error for the 5 different models will give us an estimate of the true out-of-sample error:
+
+```{r, cache=TRUE}
+set.seed(11235)
+k <- 5
+accestim <- NULL
+folds <- createFolds(training$classe,k,returnTrain = TRUE)
+for (i in 1:k) {
+    train_rpart <- training[folds[[i]],]
+    test_rpart <- training[-folds[[i]],]
+    modelFit.rpart <- train(train_rpart$classe ~ ., method="rpart",data=train_rpart)
+    accestim <- c(accestim,sum(predict(modelFit.rpart,test_rpart) == test_rpart$classe)/nrow(test_rpart))    
+}
+1- mean(accestim)
+```
+
+We can see that our estimated out-of-sample error is around 62 % which is obviously too high to yield any reliable predictions from the model. In the following we will therefore switch to another, more elaborate model, the Random Forest model.
+
+## Evaluation of the Random Forest Model for the Data Set
+
+The Random Forest Model 
+
+```{r, cache=TRUE}
+set.seed(11236)
+k <- 5
+accestim <- NULL
+folds <- createFolds(training$classe,k,returnTrain = TRUE)
+for (i in 1:k) {
+    train_rf <- training[folds[[i]],]
+    test_rf <- training[-folds[[i]],]
+    modelFit.rf <- train(train_rf$classe ~ ., method="rf",data=train_rf)
+    accestim <- c(accestim,sum(predict(modelFit.rf,test_rf) == test_rf$classe)/nrow(test_rf))
+    cat(sprintf("Fold %i finished",i))
+}
+1- mean(accestim)
+```
+
+We can see that for the Random Forest model our out-of-sample error estimate is much better (around 2 %), making this model suitable for predicting the _classe_ variable. A model trained on the full cleaned data set (52 predictors) showed that almost perfect accuracy can be achieved but we will limit ourselves on the PCA version of the data set since it provides a good balance between accuracy and computational performance.
+
+We will now go ahead and train the model with the full PCA training data set and make the predictions on the testing data set in file _pml-testing.csv_.
+
+```{r, cache=TRUE}
+modelFit.rf_cv <- train(classe ~.,method="rf",data=training,trControl = 
+                            trainControl(method="cv",
+                                         number=5,
+                                         allowParallel=TRUE))
+```
+
+## Validation of the Predictions
+
+The test data set consisting of 20 observations was imported and converted in the same way as the first dataset:
+
+```{r,cache = TRUE}
+testing_raw <- read.csv2(file = "pml-testing.csv",header = TRUE,sep=",")
+testing_raw <- testing_raw[,apply(testing_raw,2,function(x) {sum(is.na(x))})/nrow(testing_raw)<0.95]
+testing_raw <- testing_raw[,apply(testing_raw,2,function(x) { sum(x == "")})/nrow(testing_raw) < 0.95]
+testing_raw <- subset(testing_raw, select=-c(1,2,3,4,5,6,7))
+testing_raw[,c(1,2,3,5,6,7,14,15,16,18,19,20,27,28,29,31,32,33,39,40,41,42,44,45,46,51,52)] <- 
+    lapply(testing_raw[,c(1,2,3,5,6,7,14,15,16,18,19,20,27,28,29,31,32,33,39,40,41,42,44,45,46,51,52)],
+           function(x) { as.numeric(as.character(x))})
+testing <- predict(pp,testing_raw[,-53])
+testing$problem_id <- testing_raw$problem_id
+```
+
+Using the model trained on the PCA processed training data we made predictions for the outcome of the test set observations:
+
+```{r,cache=TRUE}
+answers_pca <- predict(modelFit.rf_cv,testing)
+```
+
+The data was validated during an online submission interface and achieved an accuracy of 95 % (1 out of 20 predictions were wrong). Using a Random Forest model trained on the full 52 predictor data set the one erroneous prediction could be corrected.
